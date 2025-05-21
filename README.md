@@ -37,7 +37,7 @@ Ensure `ykman` CLI is installed and in your `PATH`.
 Configure your YubiKey to use HMAC-SHA1 in Slot 2:
 
 ```bash
-ykman otp chalresp --set-chalresp 2 hmac-sha1
+ykman otp chalresp --generate 2
 ```
 
 
