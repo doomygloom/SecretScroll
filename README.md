@@ -29,7 +29,7 @@ pip install -r requirements.txt
 To enable YubiKey-based challenge-response authentication:
 
 ```bash
-pip install yubikey-manager
+apt install yubikey-manager
 ```
 
 Ensure `ykman` CLI is installed and in your `PATH`.
