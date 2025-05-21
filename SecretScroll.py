@@ -21,7 +21,7 @@ import hashlib
 
 DATA_FILE = os.path.expanduser("~/.secret_scroll")
 BACKUP_FILE = os.path.expanduser("~/.secret_scroll_backup")
-LOCK_TIMEOUT = 300  # 5 minutes
+LOCK_TIMEOUT = 300
 CLIPBOARD_TIMEOUT = 30
 KDF_ITERATIONS = 600_000
 
@@ -63,10 +63,25 @@ def derive_key(passphrase: str, salt: bytes, use_yubi: bool) -> bytes:
 def get_fernet(passphrase: str, salt: bytes, use_yubi: bool) -> Fernet:
     return Fernet(derive_key(passphrase, salt, use_yubi))
 
+def generate_hmac(key: bytes, data: bytes) -> bytes:
+    return hmac.new(key, data, hashlib.sha256).digest()
+
 def write_secure_file(path, content: bytes):
     with open(path, 'wb') as f:
         f.write(content)
     os.chmod(path, 0o600)
+
+def save_data(data, fernet: Fernet, salt: bytes):
+    encrypted = fernet.encrypt(json.dumps(data).encode())
+    mac_key = derive_key(passphrase, salt, use_yubi)
+    mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
+    write_secure_file(DATA_FILE, salt + encrypted + mac)
+
+def backup_data(data, fernet: Fernet, salt: bytes):
+    encrypted = fernet.encrypt(json.dumps(data).encode())
+    mac_key = derive_key(passphrase, salt, use_yubi)
+    mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
+    write_secure_file(BACKUP_FILE, salt + encrypted + mac)
 
 def load_data_with_salt(passphrase: str, use_yubi: bool):
     if not os.path.exists(DATA_FILE):
@@ -75,12 +90,20 @@ def load_data_with_salt(passphrase: str, use_yubi: bool):
     with open(DATA_FILE, 'rb') as f:
         raw = f.read()
 
-    if len(raw) < 16:
+    if len(raw) < 16 + 32:
         console.print("[bold red]Corrupt data file.")
         exit(1)
 
     salt = raw[:16]
-    encrypted = raw[16:]
+    mac = raw[-32:]
+    encrypted = raw[16:-32]
+
+    mac_key = derive_key(passphrase, salt, use_yubi)
+    expected_mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
+
+    if not hmac.compare_digest(mac, expected_mac):
+        console.print("[bold red]Integrity check failed. Possible tampering detected.")
+        exit(1)
 
     try:
         data = get_fernet(passphrase, salt, use_yubi).decrypt(encrypted)
@@ -89,14 +112,6 @@ def load_data_with_salt(passphrase: str, use_yubi: bool):
         console.print("[bold red]Access denied.")
         exit(1)
 
-def save_data(data, fernet: Fernet, salt: bytes):
-    encrypted = fernet.encrypt(json.dumps(data).encode())
-    write_secure_file(DATA_FILE, salt + encrypted)
-
-def backup_data(data, fernet: Fernet, salt: bytes):
-    encrypted = fernet.encrypt(json.dumps(data).encode())
-    write_secure_file(BACKUP_FILE, salt + encrypted)
-
 def restore_backup(passphrase: str, use_yubi: bool):
     if not os.path.exists(BACKUP_FILE):
         return [], None
@@ -104,12 +119,20 @@ def restore_backup(passphrase: str, use_yubi: bool):
     with open(BACKUP_FILE, 'rb') as f:
         raw = f.read()
 
-    if len(raw) < 16:
+    if len(raw) < 16 + 32:
         console.print("[bold red]Corrupt backup file.")
         return [], None
 
     salt = raw[:16]
-    encrypted = raw[16:]
+    mac = raw[-32:]
+    encrypted = raw[16:-32]
+
+    mac_key = derive_key(passphrase, salt, use_yubi)
+    expected_mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
+
+    if not hmac.compare_digest(mac, expected_mac):
+        console.print("[bold red]Backup integrity check failed.")
+        return [], None
 
     try:
         data = get_fernet(passphrase, salt, use_yubi).decrypt(encrypted)
@@ -128,6 +151,8 @@ def show_scroll(data):
     console.print(table)
 
 def copy_to_clipboard(text):
+    if not Confirm.ask("Copy secret to clipboard?", default=False):
+        return
     try:
         system = platform.system()
         if system == "Linux":
@@ -137,6 +162,7 @@ def copy_to_clipboard(text):
         elif system == "Windows":
             subprocess.run(['clip'], input=text.encode(), shell=True, check=True)
         console.print("[dim]Secret copied to clipboard.")
+        auto_clear_clipboard()
     except Exception as e:
         console.print(f"[red]Clipboard error: {e}")
 
@@ -144,11 +170,12 @@ def auto_clear_clipboard():
     def clear_clip():
         time.sleep(CLIPBOARD_TIMEOUT)
         try:
-            if platform.system() == "Linux":
+            system = platform.system()
+            if system == "Linux":
                 subprocess.run(['xclip', '-selection', 'clipboard'], input=b"", check=True)
-            elif platform.system() == "Darwin":
+            elif system == "Darwin":
                 subprocess.run(['pbcopy'], input=b"", check=True)
-            elif platform.system() == "Windows":
+            elif system == "Windows":
                 subprocess.run(['clip'], input=b"", shell=True, check=True)
             console.print("[dim]Clipboard cleared.")
         except:
@@ -156,17 +183,49 @@ def auto_clear_clipboard():
     Thread(target=clear_clip, daemon=True).start()
 
 def lock_screen(salt, use_yubi):
+    attempts = 0
+    max_attempts = 5
+    delay = 2
+
+    with open(DATA_FILE, 'rb') as f:
+        raw = f.read()
+
+    if len(raw) < 16 + 32:
+        console.print("[bold red]Corrupt data file.")
+        exit(1)
+
+    true_salt = raw[:16]
+    encrypted = raw[16:-32]
+    mac = raw[-32:]
+
     while True:
+        if attempts >= max_attempts:
+            console.print("[bold red]Too many failed attempts. Lockout.")
+            time.sleep(delay * 2)
+            attempts = 0
+
         entered = getpass.getpass("\n[locked] Enter passphrase: ")
+
         try:
-            f = get_fernet(entered, salt, use_yubi)
-            f.decrypt(f.encrypt(b"test"))
+            mac_key = derive_key(entered, true_salt, use_yubi)
+            expected_mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
+
+            if not hmac.compare_digest(mac, expected_mac):
+                raise ValueError("Invalid HMAC")
+
+            fernet = get_fernet(entered, true_salt, use_yubi)
+            fernet.decrypt(encrypted)  # actual verification step
+
             console.print("[green]Unlocked.")
-            return entered, f
+            return entered, fernet
         except:
-            console.print("[red]Incorrect passphrase.")
+            attempts += 1
+            console.print(f"[red]Incorrect passphrase. ({attempts}/{max_attempts})")
+            time.sleep(delay)
 
 def main():
+    global passphrase, use_yubi
+
     console.print("[bold green]Welcome to Secret Scroll 🧙♂")
 
     use_yubi = Confirm.ask("Use YubiKey for authentication?", default=False)
@@ -187,7 +246,6 @@ def main():
         table.add_row("edit", "[ID]", "Edit a secret")
         table.add_row("delete", "[ID]", "Delete a secret")
         table.add_row("search", r"\[title|tags] \[query]", "Search secrets")
-        table.add_row("search", "[title|tags] [query]", "Search secrets")
         table.add_row("backup", "-", "Create encrypted backup")
         table.add_row("restore", "-", "Restore from backup")
         table.add_row("clear", "-", "Clear screen")
@@ -236,7 +294,6 @@ def main():
                 entry = data[int(idx)]
                 console.print(f"\n[bold]{entry['title']}[/bold]\n{entry['body']}")
                 copy_to_clipboard(entry['body'])
-                auto_clear_clipboard()
             else:
                 console.print("[red]Invalid ID.")
 
@@ -315,7 +372,6 @@ def main():
 
         elif action == "changepw":
             console.print("[bold cyan]Change Passphrase[/bold cyan]")
-    
             current_pw = getpass.getpass("Re-enter current passphrase: ")
             try:
                 test_fernet = get_fernet(current_pw, salt, use_yubi)
@@ -326,21 +382,18 @@ def main():
 
             new_pw = getpass.getpass("New passphrase: ")
             confirm_pw = getpass.getpass("Confirm new passphrase: ")
-    
+
             if new_pw != confirm_pw:
                 console.print("[red]Passphrases do not match.")
                 continue
 
             new_salt = secrets.token_bytes(16)
             new_fernet = get_fernet(new_pw, new_salt, use_yubi)
-
             save_data(data, new_fernet, new_salt)
             backup_data(data, new_fernet, new_salt)
-
             passphrase = new_pw
             salt = new_salt
             fernet = new_fernet
-
             console.print("[green]Passphrase updated successfully.")
 
         else:
@@ -351,4 +404,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Interrupted. Secrets remain safe.")
-      
