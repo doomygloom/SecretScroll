@@ -55,7 +55,7 @@ You’ll be prompted for your master passphrase and whether to use a YubiKey. Th
 
 ## Commands
 
-![image](https://github.com/user-attachments/assets/f0360738-7c20-4039-896e-0afde13706bc)
+![image](https://github.com/user-attachments/assets/93bc16e8-cbd5-4fd0-8568-dc770653f4f4)
 
 ## Security Notes
 
