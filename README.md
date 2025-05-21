@@ -1,6 +1,6 @@
 # 📜 Secret Scroll
 
-A secure, command-line-based secrets manager written in Python. It allows users to store, manage, and back up encrypted secrets locally using robust cryptographic practices. Optional two-factor authentication via YubiKey challenge-response is also supported.
+A secure, terminal-based secrets manager written in Python. It allows users to store, manage, and back up encrypted secrets locally using robust cryptographic practices. Optional two-factor authentication via YubiKey challenge-response is also supported.
 
 ## Features
 
