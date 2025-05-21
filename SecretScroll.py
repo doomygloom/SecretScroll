@@ -71,17 +71,18 @@ def write_secure_file(path, content: bytes):
         f.write(content)
     os.chmod(path, 0o600)
 
-def save_data(data, fernet: Fernet, salt: bytes):
+def save_data(data, fernet: Fernet, salt: bytes, passphrase: str, use_yubi: bool):
     encrypted = fernet.encrypt(json.dumps(data).encode())
     mac_key = derive_key(passphrase, salt, use_yubi)
     mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
     write_secure_file(DATA_FILE, salt + encrypted + mac)
 
-def backup_data(data, fernet: Fernet, salt: bytes):
+def backup_data(data, fernet: Fernet, salt: bytes, passphrase: str, use_yubi: bool):
     encrypted = fernet.encrypt(json.dumps(data).encode())
     mac_key = derive_key(passphrase, salt, use_yubi)
     mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
     write_secure_file(BACKUP_FILE, salt + encrypted + mac)
+
 
 def load_data_with_salt(passphrase: str, use_yubi: bool):
     if not os.path.exists(DATA_FILE):
@@ -214,7 +215,7 @@ def lock_screen(salt, use_yubi):
                 raise ValueError("Invalid HMAC")
 
             fernet = get_fernet(entered, true_salt, use_yubi)
-            fernet.decrypt(encrypted)  # actual verification step
+            fernet.decrypt(encrypted)
 
             console.print("[green]Unlocked.")
             return entered, fernet
@@ -285,8 +286,8 @@ def main():
             secret = Prompt.ask("Secret")
             tags = Prompt.ask("Tags (comma-separated)", default="")
             data.append({"title": title, "body": secret, "tags": [t.strip() for t in tags.split(",") if t.strip()]})
-            save_data(data, fernet, salt)
-            backup_data(data, fernet, salt)
+            save_data(data, fernet, salt, passphrase, use_yubi)
+            backup_data(data, fernet, salt, passphrase, use_yubi)
 
         elif action == "view":
             idx = arg or Prompt.ask("ID")
@@ -302,8 +303,8 @@ def main():
             if idx.isdigit() and int(idx) < len(data):
                 new_secret = Prompt.ask("New Secret")
                 data[int(idx)]["body"] = new_secret
-                save_data(data, fernet, salt)
-                backup_data(data, fernet, salt)
+                save_data(data, fernet, salt, passphrase, use_yubi)
+                backup_data(data, fernet, salt, passphrase, use_yubi)
             else:
                 console.print("[red]Invalid ID.")
 
@@ -312,8 +313,8 @@ def main():
             if idx.isdigit() and int(idx) < len(data):
                 if Confirm.ask("Are you sure?"):
                     del data[int(idx)]
-                    save_data(data, fernet, salt)
-                    backup_data(data, fernet, salt)
+                    save_data(data, fernet, salt, passphrase, use_yubi)
+                    backup_data(data, fernet, salt, passphrase, use_yubi)
             else:
                 console.print("[red]Invalid ID.")
 
@@ -345,7 +346,7 @@ def main():
                 console.print("[yellow]No results found.")
 
         elif action == "backup":
-            backup_data(data, fernet, salt)
+            backup_data(data, fernet, salt, passphrase, use_yubi)
             console.print("[blue]Backup saved.")
 
         elif action == "restore":
@@ -355,7 +356,7 @@ def main():
                     data = restored
                     salt = new_salt
                     fernet = get_fernet(passphrase, salt, use_yubi)
-                    save_data(data, fernet, salt)
+                    save_data(data, fernet, salt, passphrase, use_yubi)
                     console.print("[green]Restored from backup.")
 
         elif action == "clear":
@@ -373,10 +374,13 @@ def main():
         elif action == "changepw":
             console.print("[bold cyan]Change Passphrase[/bold cyan]")
             current_pw = getpass.getpass("Re-enter current passphrase: ")
+
             try:
                 test_fernet = get_fernet(current_pw, salt, use_yubi)
-                test_fernet.decrypt(test_fernet.encrypt(b"test"))
-            except:
+                decrypted = test_fernet.decrypt(
+                    get_fernet(current_pw, salt, use_yubi).encrypt(json.dumps(data).encode())
+                )
+            except Exception:
                 console.print("[red]Authentication failed. Passphrase not changed.")
                 continue
 
@@ -389,11 +393,14 @@ def main():
 
             new_salt = secrets.token_bytes(16)
             new_fernet = get_fernet(new_pw, new_salt, use_yubi)
-            save_data(data, new_fernet, new_salt)
-            backup_data(data, new_fernet, new_salt)
+
+            save_data(data, new_fernet, new_salt, new_pw, use_yubi)
+            backup_data(data, new_fernet, new_salt, new_pw, use_yubi)
+
             passphrase = new_pw
             salt = new_salt
             fernet = new_fernet
+
             console.print("[green]Passphrase updated successfully.")
 
         else:
