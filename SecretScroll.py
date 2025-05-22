@@ -300,7 +300,7 @@ def main():
             ("view", "[ID]", "View a secret"),
             ("edit", "[ID]", "Edit a secret"),
             ("delete", "[ID]", "Delete a secret"),
-            ("search", "[title|tags] [query]", "Search secrets"),
+            ("search", r"\[title|tags] \[query]", "Search secrets"),
             ("backup", "-", "Create encrypted backup"),
             ("restore", "-", "Restore from backup"),
             ("clear", "-", "Clear screen"),
