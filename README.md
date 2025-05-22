@@ -32,6 +32,12 @@ To enable YubiKey-based challenge-response authentication:
 apt install yubikey-manager
 ```
 
+Or (Windows):
+
+```bash
+pip install yubikey-manager
+```
+
 Ensure `ykman` CLI is installed and in your `PATH`.
 
 Configure your YubiKey to use HMAC-SHA1 in Slot 2:
