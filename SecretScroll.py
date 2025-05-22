@@ -18,6 +18,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt, Confirm
 
+# X: @owldecoy
+
 DATA_FILE = os.path.expanduser("~/.secret_scroll")
 BACKUP_FILE = os.path.expanduser("~/.secret_scroll_backup")
 LOCK_TIMEOUT = 300
