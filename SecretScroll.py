@@ -17,66 +17,16 @@ import hashlib
 from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt, Confirm
+from crypto_utils import generate_salt, derive_key, get_fernet, generate_hmac, load_data_with_salt
+import config as c
 
 # X: @owldecoy
-
-DATA_FILE = os.path.expanduser("~/.secret_scroll")
-BACKUP_FILE = os.path.expanduser("~/.secret_scroll_backup")
-LOCK_TIMEOUT = 300
-CLIPBOARD_TIMEOUT = 30
-KDF_ITERATIONS = 600_000
 
 console = Console()
 
 def clear_screen():
     os.system("cls" if platform.system() == "Windows" else "clear")
 
-def generate_salt() -> bytes:
-    """
-    Produce a 16-byte salt whose first byte's MSB is guaranteed 0,
-    so we can use that bit as a flag in stored_salt.
-    """
-    raw = secrets.token_bytes(16)
-    first = raw[0] & 0x7F
-    return bytes([first]) + raw[1:]
-
-def get_yubikey_response(passphrase: str) -> bytes:
-    # 32-byte SHA256 challenge
-    challenge = hashlib.sha256(passphrase.encode()).digest()
-    try:
-        result = subprocess.run(
-            ['ykman', 'otp', 'calculate', '2', challenge.hex()],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
-        )
-        resp_hex = result.stdout.strip().decode()
-        return bytes.fromhex(resp_hex)
-    except subprocess.CalledProcessError as e:
-        console.print("[bold red]YubiKey challenge failed.")
-        if e.stderr:
-            console.print(f"[dim]{e.stderr.decode().strip()}")
-        exit(1)
-
-def derive_key(passphrase: str, salt: bytes, use_yubi: bool) -> bytes:
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=KDF_ITERATIONS,
-        backend=default_backend()
-    )
-    base_key = kdf.derive(passphrase.encode())
-    if use_yubi:
-        yubi_resp = get_yubikey_response(passphrase)
-        combined = hmac.new(yubi_resp, base_key, hashlib.sha256).digest()
-        return base64.urlsafe_b64encode(combined)
-    else:
-        return base64.urlsafe_b64encode(base_key)
-
-def get_fernet(passphrase: str, salt: bytes, use_yubi: bool) -> Fernet:
-    return Fernet(derive_key(passphrase, salt, use_yubi))
-
-def generate_hmac(key: bytes, data: bytes) -> bytes:
-    return hmac.new(key, data, hashlib.sha256).digest()
 
 def write_secure_file(path: str, content: bytes):
     with open(path, 'wb') as f:
@@ -87,11 +37,12 @@ def save_data(data, fernet: Fernet, salt: bytes, passphrase: str, use_yubi: bool
     encrypted = fernet.encrypt(json.dumps(data).encode())
     mac_key = derive_key(passphrase, salt, use_yubi)
     mac = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
+    # pack MSB of salt[0] as Yubi-flag
     if use_yubi:
         stored_salt = bytes([salt[0] | 0x80]) + salt[1:]
     else:
         stored_salt = bytes([salt[0] & 0x7F]) + salt[1:]
-    write_secure_file(DATA_FILE, stored_salt + encrypted + mac)
+    write_secure_file(c.DATA_FILE, stored_salt + encrypted + mac)
 
 def backup_data(data, fernet: Fernet, salt: bytes, passphrase: str, use_yubi: bool):
     encrypted = fernet.encrypt(json.dumps(data).encode())
@@ -101,46 +52,14 @@ def backup_data(data, fernet: Fernet, salt: bytes, passphrase: str, use_yubi: bo
         stored_salt = bytes([salt[0] | 0x80]) + salt[1:]
     else:
         stored_salt = bytes([salt[0] & 0x7F]) + salt[1:]
-    write_secure_file(BACKUP_FILE, stored_salt + encrypted + mac)
+    write_secure_file(c.BACKUP_FILE, stored_salt + encrypted + mac)
 
-def load_data_with_salt(passphrase: str, use_yubi: bool):
-    if not os.path.exists(DATA_FILE):
-        return [], generate_salt()
-
-    raw = open(DATA_FILE, 'rb').read()
-    if len(raw) < 16 + 32:
-        console.print("[bold red]Corrupt data file.")
-        exit(1)
-
-    stored_salt = raw[:16]
-    encrypted    = raw[16:-32]
-    mac          = raw[-32:]
-
-    yubi_required = bool(stored_salt[0] & 0x80)
-    salt = bytes([stored_salt[0] & 0x7F]) + stored_salt[1:]
-
-    if yubi_required and not use_yubi:
-        console.print("[bold red]YubiKey authentication is required for this data.")
-        exit(1)
-
-    mac_key = derive_key(passphrase, salt, use_yubi)
-    expected = generate_hmac(base64.urlsafe_b64decode(mac_key), encrypted)
-    if not hmac.compare_digest(mac, expected):
-        console.print("[bold red]Integrity check failed. Possible tampering detected.")
-        exit(1)
-
-    try:
-        data = get_fernet(passphrase, salt, use_yubi).decrypt(encrypted)
-        return json.loads(data), salt
-    except InvalidToken:
-        console.print("[bold red]Access denied.")
-        exit(1)
 
 def restore_backup(passphrase: str, use_yubi: bool):
-    if not os.path.exists(BACKUP_FILE):
+    if not os.path.exists(c.BACKUP_FILE):
         return [], None
 
-    raw = open(BACKUP_FILE, 'rb').read()
+    raw = open(c.BACKUP_FILE, 'rb').read()
     if len(raw) < 16 + 32:
         console.print("[bold red]Corrupt backup file.")
         return [], None
@@ -176,6 +95,7 @@ def show_scroll(data):
     table.add_column("Tags", style="green")
     for idx, entry in enumerate(data):
         table.add_row(str(idx), entry["title"], ", ".join(entry.get("tags", [])))
+    console.print("\n")
     console.print(table)
 
 def copy_to_clipboard(text: str):
@@ -196,7 +116,7 @@ def copy_to_clipboard(text: str):
 
 def auto_clear_clipboard():
     def clear():
-        time.sleep(CLIPBOARD_TIMEOUT)
+        time.sleep(c.CLIPBOARD_TIMEOUT)
         try:
             system = platform.system()
             if system == "Linux":
@@ -216,7 +136,7 @@ def lock_screen(use_yubi: bool):
     max_attempts = 5
     delay = 2
 
-    with open(DATA_FILE, 'rb') as f:
+    with open(c.DATA_FILE, 'rb') as f:
         raw = f.read()
     if len(raw) < 16 + 32:
         console.print("[bold red]Corrupt data file.")
@@ -257,10 +177,10 @@ def lock_screen(use_yubi: bool):
 
 
 def main():
-    console.print("[bold green]📜 Welcome to Secret Scroll!")
+    console.print("[bold green]📜 Welcome to Secret Scroll 📜")
 
-    if os.path.exists(DATA_FILE):
-        header = open(DATA_FILE, 'rb').read(1)
+    if os.path.exists(c.DATA_FILE):
+        header = open(c.DATA_FILE, 'rb').read(1)
         yubi_required = bool(header[0] & 0x80)
     else:
         yubi_required = False
@@ -317,7 +237,7 @@ def main():
     help_menu()
 
     while True:
-        if not locked and time.time() - last_active > LOCK_TIMEOUT:
+        if not locked and time.time() - last_active > c.LOCK_TIMEOUT:
             clear_screen()
             console.print("[yellow]Session locked due to inactivity.")
             locked = True
@@ -356,7 +276,10 @@ def main():
             if idx.isdigit() and int(idx) < len(data):
                 entry = data[int(idx)]
                 console.print(f"\n[bold]{entry['title']}[/bold]\n{entry['body']}")
-                copy_to_clipboard(entry['body'])
+                if c.ENABLE_CLIPBOARD:
+                    copy_to_clipboard(entry['body'])
+                else:
+                    pass
             else:
                 console.print("[red]Invalid ID.")
 
@@ -466,3 +389,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Interrupted. Secrets remain safe.")
+
